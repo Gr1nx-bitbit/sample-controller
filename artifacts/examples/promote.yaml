@@ -1,0 +1,6 @@
+apiVersion: gr1nx.dev/v1alpha1
+kind: PodCustomizer
+metadata:
+  name: promote
+spec:
+  promote: true
