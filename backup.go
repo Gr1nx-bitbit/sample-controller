@@ -280,32 +280,33 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return err
 	}
 
+	targetPod, err := c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Get(context.TODO(), customizer.Status.TargetPod, v1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
 	// just realized I need to put an originator namespace, unless I want to just promote the pod in the same namespace
-	if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && customizer.Spec.Promote {
-		pod, err := c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Get(context.TODO(), customizer.Status.TargetPod, v1.GetOptions{})
-		if err != nil {
-			return err
-		}
+	if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && customizer.Spec.Promote && len(targetPod.GetOwnerReferences()) == 0 {
 
 		podSpec := corev1.PodTemplateSpec{
 			ObjectMeta: v1.ObjectMeta{
-				Name:   pod.Name,
-				Labels: pod.Labels,
+				Name:   targetPod.Name,
+				Labels: targetPod.Labels,
 			},
-			Spec: pod.Spec,
+			Spec: targetPod.Spec,
 		}
 
 		logger.Info("Creating pod promotion deployment")
 
 		deployment := &apisv1.Deployment{
 			ObjectMeta: v1.ObjectMeta{
-				Name:      pod.Name + "-deployment",
+				Name:      targetPod.Name + "-deployment",
 				Namespace: customizer.Status.TargetNamespace,
 			},
 			Spec: apisv1.DeploymentSpec{
 				Replicas: intToPointer(2),
 				Selector: &v1.LabelSelector{
-					MatchLabels: pod.Labels,
+					MatchLabels: targetPod.Labels,
 				},
 				Template: podSpec,
 			},
@@ -320,7 +321,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 
 		logger.Info("Deleting promoted pod's originator pod")
 
-		err = c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Delete(context.TODO(), pod.Name, v1.DeleteOptions{})
+		err = c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Delete(context.TODO(), targetPod.Name, v1.DeleteOptions{})
 		if err != nil {
 			return err
 		}
@@ -336,7 +337,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 
 		return nil
 
-	} else if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && !customizer.Spec.Promote {
+	} else if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && !customizer.Spec.Promote && len(targetPod.GetOwnerReferences()) == 0 {
 		logger.Info("deleting pod", customizer.Status.TargetPod, customizer.Status.TargetNamespace)
 		err := c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Delete(context.TODO(), customizer.Status.TargetPod, v1.DeleteOptions{})
 		if err != nil {
