@@ -73,6 +73,7 @@ type Controller struct {
 	// sampleclientset is a clientset for our own API group
 	sampleclientset clientset.Interface
 
+	// podLister lists.PodInformer
 	podCustomizerList    listers.PodCustomizerLister
 	podCustomizersSynced cache.InformerSynced
 
@@ -92,6 +93,7 @@ func NewController(
 	ctx context.Context,
 	kubeclientset kubernetes.Interface,
 	sampleclientset clientset.Interface,
+	podInformer lists.PodInformer,
 	podCustomizerInformer informers.PodCustomizerInformer) *Controller {
 	logger := klog.FromContext(ctx)
 
@@ -138,8 +140,7 @@ func NewController(
 	// set up an event handler for when Pod resources change. Have the handler
 	// update a PodCustomizer's status to inspect the pod and either promote or
 	// destroy it
-	var podList lists.PodInformer
-	podList.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.updateCustomizer,
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			controller.updateCustomizer(newObj)
