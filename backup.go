@@ -134,12 +134,17 @@ func NewController(
 			}
 		},
 	})
-	// Set up an event handler for when Deployment resources change. This
-	// handler will lookup the owner of the given Deployment, and if it is
-	// owned by a Foo resource then the handler will enqueue that Foo resource for
-	// processing. This way, we don't need to implement custom logic for
-	// handling Deployment resources. More info on this pattern:
-	// https://github.com/kubernetes/community/blob/8cafef897a22026d42f5e5bb3f104febe7e29830/contributors/devel/controllers.md
+
+	// set up an event handler for when Pod resources change. Have the handler
+	// update a PodCustomizer's status to inspect the pod and either promote or
+	// destroy it
+	var podList lists.PodInformer
+	podList.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: controller.updateCustomizer,
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			controller.updateCustomizer(newObj)
+		},
+	})
 
 	return controller
 }
@@ -177,39 +182,30 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	return nil
 }
 
-// This method monitors pods throughout the cluster ?(default or all namespaces) and updates
-// the status of the CRs so that the controller notices it and then either promotes or deletes
-// the pod. It also has to check for active CRs. If there are none active it'll either create one
-// or cache it somehow
-func (c *Controller) monitorPods(ctx context.Context) {
-	// logger := klog.FromContext(ctx)
-	var podList lists.PodInformer
-	podList.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			// whenever a pod is added, I want to check for its ownerReference | actually I'll do this is in the business logic
-			// and then update a CR with its name and namespace to be deleted or promoted
-			objectRef, err := cache.ObjectToName(obj)
-			if err != nil {
-				utilruntime.HandleError(err)
-				return
-			}
-
-			customs, err := c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers("default").List(context.TODO(), v1.ListOptions{})
-			if err != nil {
-				klog.Info("error retrieving list of podCustomizers")
-				return
-			}
-
-			for custom := range customs.Items {
-				cus, err := c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers(objectRef.Namespace).Get(context.TODO(), customs.Continue, v1.GetOptions{})
-			}
-
-		},
-	})
-	for {
-
-		time.Sleep(1 * time.Second)
+func (c *Controller) updateCustomizer(obj interface{}) {
+	// whenever a pod is added, I want to check for its ownerReference | actually I'll do this is in the business logic
+	// and then update a CR with its name and namespace to be deleted or promoted
+	objectRef, err := cache.ObjectToName(obj) // reference to the pod
+	if err != nil {
+		utilruntime.HandleError(err)
+		return
 	}
+
+	// list of the CRs in the default namespace
+	customs, err := c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers("default").List(context.TODO(), v1.ListOptions{})
+	if err != nil {
+		klog.Info("error retrieving list of podCustomizers")
+		return
+	}
+
+	for _, item := range customs.Items {
+		custom := item.DeepCopy()
+		custom.Status.TargetPod = objectRef.Name
+		custom.Status.TargetNamespace = objectRef.Namespace
+		c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers("default").Update(context.TODO(), custom, v1.UpdateOptions{})
+		break
+	}
+
 }
 
 // runWorker is a long-running function that will continually call the
