@@ -175,6 +175,14 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	return nil
 }
 
+// This method monitors pods throughout the cluster ?(default or all namespaces) and updates
+// the status of the CRs so that the controller notices it and then either promotes or deletes
+// the pod. It also has to check for active CRs. If there are none active it'll either create one
+// or cache it somehow
+func (c *Controller) monitorPods(ctx context.Context) {
+
+}
+
 // runWorker is a long-running function that will continually call the
 // processNextWorkItem function in order to read and process a message on the
 // workqueue.
