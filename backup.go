@@ -23,8 +23,11 @@ import (
 
 	"golang.org/x/time/rate"
 
+	apisv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	// "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -220,21 +223,112 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	return true
 }
 
+func intToPointer(num int) *int32 {
+	n := int32(num)
+	return &n
+}
+
 // syncHandler compares the actual state with the desired, and attempts to
 // converge the two. It then updates the Status block of the Foo resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName) error {
-	klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
+	logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
 	klog.Info("controller is running!")
+
+	// first, I want to check if the target pod and target namespace fields are there
+	// get the CR
+	customizer, err := c.podCustomizerList.PodCustomizers(objectRef.Namespace).Get(objectRef.Name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			utilruntime.HandleErrorWithContext(ctx, err, "Customizer referenced by item in work queue no longer exists", "objectReference", objectRef)
+			return nil
+		}
+
+		return err
+	}
+
+	// just realized I need to put an originator namespace, unless I want to just promote the pod in the same namespace
+	if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && customizer.Spec.Promote {
+		pod, err := c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Get(context.TODO(), customizer.Status.TargetPod, v1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		podSpec := corev1.PodTemplateSpec{
+			ObjectMeta: v1.ObjectMeta{
+				Name:   pod.Name,
+				Labels: pod.Labels,
+			},
+			Spec: pod.Spec,
+		}
+
+		logger.Info("Creating pod promotion deployment")
+
+		deployment := &apisv1.Deployment{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      pod.Name + "-deployment",
+				Namespace: customizer.Status.TargetNamespace,
+			},
+			Spec: apisv1.DeploymentSpec{
+				Replicas: intToPointer(2),
+				Selector: &v1.LabelSelector{
+					MatchLabels: pod.Labels,
+				},
+				Template: podSpec,
+			},
+		}
+
+		logger.Info("Applying pod promotion as deployment")
+
+		_, err = c.kubeclientset.AppsV1().Deployments(customizer.Status.TargetNamespace).Create(context.TODO(), deployment, v1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+
+		logger.Info("Deleting promoted pod's originator pod")
+
+		err = c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Delete(context.TODO(), pod.Name, v1.DeleteOptions{})
+		if err != nil {
+			return err
+		}
+
+		update := customizer.DeepCopy()
+		update.Status.NumPromoted += 1
+
+		logger.Info("updating podCustimzer numPromoted", objectRef.Name, objectRef.Namespace)
+		_, err = c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers(objectRef.Namespace).Update(context.TODO(), update, v1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+
+		return nil
+
+	} else if customizer.Status.TargetPod != "" && customizer.Status.TargetNamespace != "" && !customizer.Spec.Promote {
+		logger.Info("deleting pod", customizer.Status.TargetPod, customizer.Status.TargetNamespace)
+		err := c.kubeclientset.CoreV1().Pods(customizer.Status.TargetNamespace).Delete(context.TODO(), customizer.Status.TargetPod, v1.DeleteOptions{})
+		if err != nil {
+			return err
+		}
+
+		logger.Info("updating podCustomizer numDeleted", objectRef.Name, objectRef.Namespace)
+		update := customizer.DeepCopy()
+		update.Status.NumDeleted += 1
+		_, err = c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers(customizer.Status.TargetNamespace).Update(context.TODO(), update, v1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	logger.Info("no work to do")
 	return nil
 	// // Get the Foo resource with this namespace/name
 	// foo, err := c.foosLister.Foos(objectRef.Namespace).Get(objectRef.Name)
 	// if err != nil {
 	// 	// The Foo resource may no longer exist, in which case we stop
 	// 	// processing.
-	// 	if errors.IsNotFound(err) {
-	// 		utilruntime.HandleErrorWithContext(ctx, err, "Foo referenced by item in work queue no longer exists", "objectReference", objectRef)
-	// 		return nil
+
 	// 	}
 
 	// 	return err
