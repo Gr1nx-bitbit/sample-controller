@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	// "container/list"
 	"context"
 	"fmt"
 	"time"
@@ -31,6 +32,7 @@ import (
 	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	lists "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -180,7 +182,34 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 // the pod. It also has to check for active CRs. If there are none active it'll either create one
 // or cache it somehow
 func (c *Controller) monitorPods(ctx context.Context) {
+	// logger := klog.FromContext(ctx)
+	var podList lists.PodInformer
+	podList.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			// whenever a pod is added, I want to check for its ownerReference | actually I'll do this is in the business logic
+			// and then update a CR with its name and namespace to be deleted or promoted
+			objectRef, err := cache.ObjectToName(obj)
+			if err != nil {
+				utilruntime.HandleError(err)
+				return
+			}
 
+			customs, err := c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers("default").List(context.TODO(), v1.ListOptions{})
+			if err != nil {
+				klog.Info("error retrieving list of podCustomizers")
+				return
+			}
+
+			for custom := range customs.Items {
+				cus, err := c.sampleclientset.SamplecontrollerV1alpha1().PodCustomizers(objectRef.Namespace).Get(context.TODO(), customs.Continue, v1.GetOptions{})
+			}
+
+		},
+	})
+	for {
+
+		time.Sleep(1 * time.Second)
+	}
 }
 
 // runWorker is a long-running function that will continually call the
